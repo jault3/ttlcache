@@ -7,9 +7,10 @@ import (
 
 // Cache is a synchronised map of items that auto-expire once stale
 type Cache struct {
-	mutex sync.RWMutex
-	ttl   time.Duration
-	items map[string]*Item
+	mutex    sync.RWMutex
+	ttl      time.Duration
+	items    map[string]*Item
+	shutdown chan struct{}
 }
 
 // Set is a thread-safe way to add new items to the map
@@ -18,6 +19,13 @@ func (cache *Cache) Set(key string, data string) {
 	item := &Item{data: data}
 	item.touch(cache.ttl)
 	cache.items[key] = item
+	cache.mutex.Unlock()
+}
+
+// Delete is a thread-safe way to remove items from the map
+func (cache *Cache) Delete(key string) {
+	cache.mutex.Lock()
+	delete(cache.items, key)
 	cache.mutex.Unlock()
 }
 
@@ -47,6 +55,11 @@ func (cache *Cache) Count() int {
 	return count
 }
 
+// Close the cache and exit all goroutines
+func (cache *Cache) Close() {
+	cache.shutdown <- struct{}{}
+}
+
 func (cache *Cache) cleanup() {
 	cache.mutex.Lock()
 	for key, item := range cache.items {
@@ -66,6 +79,8 @@ func (cache *Cache) startCleanupTimer() {
 	go (func() {
 		for {
 			select {
+			case <-cache.shutdown:
+				return
 			case <-ticker:
 				cache.cleanup()
 			}
@@ -76,8 +91,9 @@ func (cache *Cache) startCleanupTimer() {
 // NewCache is a helper to create instance of the Cache struct
 func NewCache(duration time.Duration) *Cache {
 	cache := &Cache{
-		ttl:   duration,
-		items: map[string]*Item{},
+		ttl:      duration,
+		items:    map[string]*Item{},
+		shutdown: make(chan struct{}, 1),
 	}
 	cache.startCleanupTimer()
 	return cache
